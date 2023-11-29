@@ -1,6 +1,5 @@
 ﻿; WinIoCtl.h
 ;
-
 #FILE_DEVICE_FILE_SYSTEM         = $00000009
 #METHOD_BUFFERED                 = 0
 #FILE_ANY_ACCESS                 = 0
