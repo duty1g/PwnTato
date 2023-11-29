@@ -1,6 +1,6 @@
 # PwnTato
 
-PwnTato is a local privilege escalation tool that facilitates the transition from Windows Service Accounts to NT AUTHORITY\SYSTEM. It leverages the SeBackupPrivilege token privilege to inject a payload into the seclogon registry key.
+PwnTato is a local privilege escalation tool that facilitates the transition from Windows Service Accounts to NT AUTHORITY\SYSTEM. It leverages the **SeBackupPrivilege** token privilege to inject a payload into the **seclogon** registry key.
 
 
 ![PwnTato Logo](https://i.imgur.com/XDE367N.png)
