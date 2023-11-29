@@ -1,6 +1,7 @@
 # PwnTato
 
-PwnTato is a simple utility written in PureBasic that leverages the SeBackupPrivilege token privilege to inject a payload into the `seclogon` registry key. This tool is designed for educational and testing purposes only.
+PwnTato is a local privilege escalation tool that facilitates the transition from Windows Service Accounts to NT AUTHORITY\SYSTEM. It leverages the SeBackupPrivilege token privilege to inject a payload into the seclogon registry key.
+
 
 ![PwnTato Logo](https://i.imgur.com/XDE367N.png)
 
